@@ -1,0 +1,101 @@
+---
+alwaysApply: true
+---
+
+## 技术栈
+
+- 运行时：Node 20+ LTS。不要把最新 major 当默认
+- 语言：TypeScript。不要写新的 JS 文件
+- 校验：Zod。不要在每个 handler 里手写 `if (!req.body.x)`
+- ORM：跟项目走。禁止同时 Prisma + TypeORM
+- 日志：pino 或项目 logger。禁止生产 `console.log`
+- HTTP 客户端：跟项目走。不要再引一个 axios「先试」
+- 配置：dotenv + 启动时 schema 校验。不要运行中把未定义的 `process.env.FOO` 当 string
+- 测试：Vitest 或 Jest + SuperTest
+- 禁止在请求处理里 `child_process.exec` 用户输入
+
+---
+
+## 目录
+
+```text
+src/
+  app.ts                 # 创建 express()、挂中间件与路由，不 listen
+  server.ts              # listen、信号、关闭
+  config/
+  routes/
+  controllers/           # 可选
+  services/
+  repositories/ 或 db/
+  middlewares/
+  schemas/
+  lib/ 或 utils/
+  types/
+```
+
+功能内聚优先。路由 `users.router.ts`，service `user.service.ts`，schema `user.schema.ts`。`app.ts` 与 `server.ts` 分离，便于 `supertest(app)`。
+
+---
+
+## 中间件顺序
+
+`createApp()`：`disable('x-powered-by')` → helmet → `express.json({ limit })` → requestId → httpLogger → `/api` 路由 → notFound → errorHandler。
+
+1. json / urlencoded 必须设 `limit`
+2. 鉴权挂在需要保护的 Router 上，不要全局后再在公开路由里特例抠
+3. 404 与 error 必须在所有业务路由之后
+4. 不要在业务路由之后再 `express.json()`（永远解析不到）
+5. Express 5 与 4 的 `req.query` 类型不同，不要混抄
+
+---
+
+## 路由与 Service
+
+1. 使用 `Router()`，按资源 `app.use('/users', usersRouter)`
+2. 成功路径只 `res.status().json()` 一次
+3. 不要在 handler 里直接 `prisma.user.findMany`，走 service
+4. REST：`GET` 安全幂等，不要用 `GET` 做删除
+5. 列表支持项目已有分页，默认上限防止一次拉全表
+6. 路径参数、query 立刻校验，不要把 `req.params.id as string` 当可信 UUID
+7. Express 4 必须 `asyncHandler` 或 `try/catch` + `next(err)`。Express 5 确认版本真支持 rejected promise 后再省略包装器
+8. service 接收已校验输入，不碰 `req`/`res`
+9. 事务放数据层。禁止循环里开一堆无事务的写
+10. 禁止把 ORM entity 原样当对外 JSON 甩出密码哈希、内部列
+11. 禁止把客户端 `orderBy` 字符串直接拼进 SQL。避免 N+1：不要在 `map` 里 `await` 单条查询
+
+---
+
+## 校验、错误、鉴权
+
+1. Zod schema 与类型同源：`z.infer<typeof schema>`
+2. 校验失败 400，可给字段路径，不要内部 stack 给客户端
+3. 禁止 `any`。`req.user` 用 `types/express.d.ts` 声明合并。禁止 `!`
+4. error middleware 必须四个参数，放在最后。领域错误 `AppError`（status + code）。未捕获记日志，响应稳定 `code`
+5. 不要在 error handler 里再 `throw` 而不兜底
+6. 认证跟现有 session/JWT/cookie。授权检查资源归属，不要只验「已登录」
+7. CORS 白名单。生产禁止 `origin: *` 再配 `credentials: true`
+8. Helmet、body 大小、超时。上传限制 MIME/大小/扩展名，存受控目录
+9. 密码 Argon2id 或项目哈希。禁止 MD5/SHA1。SQL 只用参数化/ORM
+10. 生产 `trust proxy` 只在确有反代时开启，并限制跳数
+
+---
+
+## 日志、启动、测试
+
+1. 每请求 `requestId`，日志与响应头带上。禁止把密码、token 打进日志
+2. 5xx 打 error，4xx 按需 warn。健康检查 `/health` 不要刷 info
+3. 启动时 Zod 解析 `process.env`，缺项直接退出
+4. `listen` 只在 `server.ts`。`SIGTERM`/`SIGINT`：停收新请求、等进行中请求、关 DB 再 exit
+5. 不要把 `app.listen` 写在被测试反复 import 的模块顶层
+6. SuperTest 打 `createApp()`。优先测状态码、契约、权限拒绝。核心覆盖率至少 80%。不要连生产库
+
+---
+
+## 禁止项
+
+1. handler 吞掉错误还不 `next(err)`
+2. `res.json` 之后还继续写业务或再次 `res.send`
+3. `any`、非空断言 `!`、生产 `console.log`
+4. 密钥写入源码；拼接 SQL；用户输入当路径直接 `fs.readFile`；`eval` / `exec` 用户输入
+5. 为新接口再引入 Fastify/Koa/Nest；关掉 helmet「先跑通」
+6. 超过三层条件嵌套；请求路径上无上限同步计算或读全表

@@ -1,0 +1,144 @@
+---
+alwaysApply: true
+---
+
+## 技术栈
+
+沿用项目已有栈。
+
+- 构建：Vite + `tauri` CLI。不要 Webpack，不要 electron-vite
+- Tauri 大版本跟仓库（1 或 2）。不要默默从 1 升到 2 还不改权限模型
+- UI：React 19 + Vite。函数组件 + hooks
+- 路由：跟现有走。生产常用自定义协议，`BrowserRouter` 可以，但仓库已是 HashRouter 就别改。不要按 Electron `file://` 思路乱改
+- 样式：Tailwind + `cn` / `cva`（项目已有则用）。组件库只用现有一套
+- 表单：React Hook Form + Zod。远程：TanStack Query
+- 本地 / OS：官方 plugin 或 typed `invoke`。不要前端自己拼 shell
+- 状态：UI 用 React state；跨窗 / 托盘 / 磁盘真相在 Rust。禁止 Zustand 当事文件系统
+- 打包 / 更新：跟现有 `tauri.conf.json` 与 updater 插件。不要自己 curl 覆盖安装包
+- 测试：前端 Vitest + Testing Library（`invoke` mock）。Rust 测 command 的纯逻辑
+
+---
+
+## 目录与命名
+
+按项目已有结构对齐；常见脚手架：
+
+```text
+src/                     # Vite + React
+  components/
+  hooks/                 # 含 useXxx 包一层 invoke
+  lib/
+  api/ 或 services/      # 远程 HTTP，不是 Tauri command
+  types/
+src-tauri/
+  src/
+    lib.rs / main.rs
+    commands/            # #[tauri::command]
+  capabilities/          # Tauri 2
+  tauri.conf.json
+  Cargo.toml
+```
+
+- 前端组件：`PascalCase.tsx`。hooks：`useXxx.ts`
+- command：Rust `snake_case`，前端 `invoke('snake_case')`，与现有一致
+- 前端不要 import `src-tauri/**`。Rust 不要为了共享类型去依赖 React
+- 共享 DTO：手写两边类型，或项目已有 specta / ts-rs 则沿用。改字段必须两边一起改
+
+---
+
+## 进程边界
+
+- Rust / 插件：读用户文件、对话框、打开外部链接、托盘、全局快捷键、自动更新、sidecar
+- 前端：React、DOM、`invoke` / `listen`、官方 plugin 的 JS API
+- 纯计算、校验能放前端就放前端。要碰磁盘、进程、系统路径必须过 Tauri
+- 离开 WebView 就不能编译的 Node API，说明写错运行时了
+
+---
+
+## 安全与权限
+
+1. 先读现有 `tauri.conf.json`。Tauri 2 再读 `capabilities/*.json`；Tauri 1 再读 `tauri.allowlist`
+2. 新能力只开用到的权限（例如只读 `$APPDATA/<app>`，不要整个磁盘）
+3. CSP 跟现有配置。生产不要 `unsafe-eval` 长期开着。不要为了某个 CDN 把 CSP 改成 `*`
+4. `shell` / `sidecar`：只允许项目声明过的二进制与参数。禁止把前端字符串当完整命令执行
+5. 打开外链用官方 opener / shell 插件，且只允许 `https:` 及项目自定义协议
+6. 生产不要默认打开 devtools。窗口导航限制跟现有 `dangerousRemoteDomainIpcAccess` / 隔离策略走，不要随意放开远程页
+7. command 参数当不可信输入：路径做规范化，拒绝 `..` 逃出应用目录
+8. 不要把私钥、更新签名密钥写进前端或提交到 Git
+
+---
+
+## Command 与事件
+
+1. 前端 → Rust：`invoke`。不要自己造 WebSocket 当默认 IPC
+2. Rust → 前端：`emit` + 前端 `listen`。`listen` 必须在 `useEffect` 里退订
+3. command 返回 `Result<T, E>`，错误信息可展示，不要把内部路径、SQL、panic 原文甩给 UI
+4. 禁止在 command 里 `unwrap()` / `expect()` 当正常控制流。IO 失败要变成错误返回
+5. 一次 command 一件事。不要万能 `do_anything({ type })`
+6. 大文件不要 `invoke` 来回拷贝整包；用插件 fs 流式读、或应用数据目录路径
+7. 前端不要在组件里到处 `invoke('...')` 拼命令名。抽 `src/lib/tauri.ts` 或 `useXxx` hook
+8. 新增 command 必须：Rust 注册（`invoke_handler` / `generate_handler`）+ 权限 + 前端封装，三处一起改
+9. 官方插件能做的（dialog、fs、notification、updater）优先插件，不要再手写一套等价 command
+
+---
+
+## Rust 与窗口
+
+1. 业务 command 拆到 `commands/` 或模块，不要全堆在 `main.rs`
+2. 状态用 `tauri::State` / `Mutex` / 项目已有模式。不要用 `lazy_static` 可变全局当默认
+3. 窗口创建、单例、托盘、关闭到托盘 vs 退出，写在 Rust。前端只 `invoke` / 调 window API
+4. 不要在 React 里假设能 `new BrowserWindow`。第二窗口由 Rust 或 `@tauri-apps/api/window` 按项目现有方式创建
+5. 用户数据用 Tauri path（`app_data_dir` / `app_config_dir`），不要写 Program Files，不要抄 Electron `userData` 字符串
+6. sidecar 路径跟 `tauri.conf.json` 声明走。参数白名单
+
+---
+
+## 前端（Vite + React）
+
+1. 就是 Vite SPA。`import.meta.env` 只暴露 `VITE_` 前缀。不要读 Rust 环境里的密钥
+2. `devUrl` / `frontendDist` 跟 `tauri.conf.json` 与 Vite `base` 对齐。生产资源用相对路径，不要写死 `localhost`
+3. 函数组件。导出 Props；解构 + 默认值；显式 `children?: React.ReactNode`
+4. `className` 用 `cn` / `cva`。业务超过约 30 行抽 hook / 子组件
+5. 副作用在 `useEffect` / 事件 / Query / `invoke` 回调。禁止 render 阶段副作用。hooks 不在条件/循环中调用
+6. 远程 HTTP：`useQuery` / `useMutation`，`queryKey` 为含参数的稳定数组。成功 `invalidateQueries`
+7. 打开本地文件、选目录：dialog 插件 + hook，不要硬套 Query（除非项目已有且 key 清楚）
+8. 表单：RHF + Zod。能推导的值不要再存一份 state
+9. 禁止常规 `style={{}}`。列表稳定 id key。图给宽高。禁止 `document.getElementById` 驱动 UI
+10. 禁止 `any`、`!`、生产 `console.log`。不要 `FC<Props>`
+11. 纯浏览器 `vite` 预览时 `invoke` 会失败：入口做检测或 dev mock，不要让整个 App 白屏
+12. 全局快捷键在 Rust 或官方 plugin；页面内快捷键注意输入框焦点
+
+---
+
+## 打包与更新
+
+1. 改图标、bundle id、窗口尺寸先读 `tauri.conf.json`，不要另写一份 electron-builder 配置
+2. 更新用项目已有 updater 插件与签名公钥。开发环境默认不检查更新
+3. 不要在用户未保存时强制退出安装
+4. CI 签名 / 公证跟现有流水线。不要把证书密码写进源码
+5. 用 `import.meta.env.DEV` 或 Tauri 的 environment 判断，不要抄 `app.isPackaged`
+
+---
+
+## 测试
+
+1. 前端：Vitest + Testing Library。`invoke` / 插件 API 全部 mock
+2. Rust：把可测逻辑抽离 command 薄封装，单测纯函数
+3. 核心 hooks 与 command 业务覆盖率至少 80%
+4. 不要为覆盖率测 `@tauri-apps/*` 内部实现
+
+---
+
+## 禁止项
+
+1. 按 Electron 写：`ipcRenderer`、`contextBridge`、`BrowserWindow`、`nodeIntegration`
+2. 前端 Node `fs` / `child_process` / `window.require`
+3. 权限默认全开（整盘 fs、任意 shell）
+4. command 里 `unwrap()` 当业务；把前端字符串当 shell 整行执行
+5. `open` 未校验的 URL；生产自动开 devtools
+6. 源码里写更新密钥、签名密码、Apple / Windows 证书
+7. 用 Next.js SSR / `'use client'` 模式当 Tauri 前端
+8. 为图省事同时引入 Electron
+9. 第二套 IPC（又是 invoke 又是自己架的未文档化通道）而不收口
+10. 生产 `console.log`、`any`、非空断言；循环中调用 hooks
+11. 默默升 Tauri 大版本，或把 v2 capabilities 改回「全允许」来让功能「先跑通」
